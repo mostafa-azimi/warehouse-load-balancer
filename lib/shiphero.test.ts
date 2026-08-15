@@ -36,8 +36,8 @@ describe("ShipHero customer allowlist", () => {
                     {
                       node: {
                         id: "opaque-10001",
-                        legacy_id: 10001,
-                        username: "account-user",
+                        legacy_id: 987654,
+                        username: "10001",
                         email: "client@example.com",
                         warehouse_relationship: { from_name: "API Name" },
                       },

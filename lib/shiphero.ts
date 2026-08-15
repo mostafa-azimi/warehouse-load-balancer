@@ -78,11 +78,18 @@ export async function listLiveClients(): Promise<ClientAccount[]> {
   if (!allowed.size) return [];
   return data.account.data.customers.edges
     .map(({ node }) => {
-      const accountNumber = String(node.legacy_id);
-      const configuredName = allowed.get(node.id) || allowed.get(accountNumber);
+      const legacyAccountNumber = String(node.legacy_id);
+      const accountNumber = /^\d+$/.test(node.username?.trim())
+        ? node.username.trim()
+        : legacyAccountNumber;
+      const configuredName =
+        allowed.get(node.id) ||
+        allowed.get(accountNumber) ||
+        allowed.get(legacyAccountNumber);
       return {
         id: node.id,
         accountNumber,
+        legacyAccountNumber,
         name:
           configuredName ||
           node.warehouse_relationship?.from_name ||
@@ -92,8 +99,16 @@ export async function listLiveClients(): Promise<ClientAccount[]> {
       };
     })
     .filter(
-      (client) => allowed.has(client.id) || allowed.has(client.accountNumber),
-    );
+      (client) =>
+        allowed.has(client.id) ||
+        allowed.has(client.accountNumber) ||
+        allowed.has(client.legacyAccountNumber),
+    )
+    .map((client) => ({
+      id: client.id,
+      accountNumber: client.accountNumber,
+      name: client.name,
+    }));
 }
 
 type Connection<T> = {
