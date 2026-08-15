@@ -33,7 +33,6 @@ async function request<T>(query: string, variables: Record<string, unknown>) {
     body: JSON.stringify({ query, variables }),
     cache: "no-store",
   });
-  if (!response.ok) throw new Error(`ShipHero returned HTTP ${response.status}`);
   const payload = (await response.json()) as {
     data?: T;
     errors?: GraphQLError[];
@@ -41,6 +40,7 @@ async function request<T>(query: string, variables: Record<string, unknown>) {
   if (payload.errors?.length) {
     throw new Error(payload.errors.map((error) => error.message).join("; "));
   }
+  if (!response.ok) throw new Error(`ShipHero returned HTTP ${response.status}`);
   if (!payload.data) throw new Error("ShipHero returned no data");
   return payload.data;
 }
@@ -58,7 +58,6 @@ async function fetchAccessibleCustomers(): Promise<CustomerNode[]> {
           edges: Array<{ node: CustomerNode }>;
         };
       } | null;
-      errors?: GraphQLError[];
     };
   }>(
     `query EligibleCustomers {
@@ -69,20 +68,11 @@ async function fetchAccessibleCustomers(): Promise<CustomerNode[]> {
             edges { node { id legacy_id username email warehouse_relationship { from_name } } }
           }
         }
-        errors { message code }
       }
     }`,
     {},
   );
 
-  if (data.account.errors?.length) {
-    const details = data.account.errors
-      .map((error) => `${error.message}${error.code ? ` (code ${error.code})` : ""}`)
-      .join("; ");
-    throw new Error(
-      `ShipHero account query failed: ${details}${data.account.request_id ? ` [request ${data.account.request_id}]` : ""}`,
-    );
-  }
   if (!data.account.data) {
     throw new Error(
       `ShipHero account query returned no data${data.account.request_id ? ` [request ${data.account.request_id}]` : ""}`,
