@@ -30,11 +30,11 @@ Copy `.env.example` to `.env.local` and set:
 
 ```text
 SHIPHERO_ACCESS_TOKEN=your_server_side_token
-ALLOWED_CUSTOMER_ACCOUNT_IDS=QWNjb3VudDoxMjM0,QWNjb3VudDo1Njc4
+ALLOWED_CUSTOMER_ACCOUNT_IDS=10001=Example Client,10002=Another Client
 SHIPHERO_WRITE_MODE=preview
 ```
 
-`ALLOWED_CUSTOMER_ACCOUNT_IDS` is mandatory in live mode. If it is empty, no customer accounts are exposed. Never prefix a server secret with `NEXT_PUBLIC_`.
+`ALLOWED_CUSTOMER_ACCOUNT_IDS` is mandatory in live mode. It accepts either ShipHero public API IDs or numeric account numbers. Use `account=name` to override the dropdown's plain-text display name. If it is empty, no customer accounts are exposed. Never prefix a server secret with `NEXT_PUBLIC_`.
 
 ## Deploy to Vercel
 

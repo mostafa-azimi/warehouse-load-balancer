@@ -63,24 +63,37 @@ export async function listLiveClients(): Promise<ClientAccount[]> {
     }`,
     {},
   );
-  const allowed = new Set(
+  const allowed = new Map(
     (process.env.ALLOWED_CUSTOMER_ACCOUNT_IDS ?? "")
       .split(",")
-      .map((id) => id.trim())
-      .filter(Boolean),
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .map((entry) => {
+        const separator = entry.indexOf("=");
+        return separator === -1
+          ? [entry, ""]
+          : [entry.slice(0, separator).trim(), entry.slice(separator + 1).trim()];
+      }),
   );
   if (!allowed.size) return [];
   return data.account.data.customers.edges
-    .map(({ node }) => ({
-      id: node.id,
-      accountNumber: String(node.legacy_id),
-      name:
-        node.warehouse_relationship?.from_name ||
-        node.email ||
-        node.username ||
-        `Account ${node.legacy_id}`,
-    }))
-    .filter((client) => allowed.has(client.id));
+    .map(({ node }) => {
+      const accountNumber = String(node.legacy_id);
+      const configuredName = allowed.get(node.id) || allowed.get(accountNumber);
+      return {
+        id: node.id,
+        accountNumber,
+        name:
+          configuredName ||
+          node.warehouse_relationship?.from_name ||
+          node.email ||
+          node.username ||
+          `Account ${node.legacy_id}`,
+      };
+    })
+    .filter(
+      (client) => allowed.has(client.id) || allowed.has(client.accountNumber),
+    );
 }
 
 type Connection<T> = {
