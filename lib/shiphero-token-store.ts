@@ -28,7 +28,10 @@ function redis() {
   if (!redisConfigured()) {
     throw new Error("The Upstash Redis integration is not configured");
   }
-  return Redis.fromEnv();
+  return new Redis({
+    url: process.env.KV_REST_API_URL!,
+    token: process.env.KV_REST_API_TOKEN!,
+  });
 }
 
 function jwtTimes(token: string) {
