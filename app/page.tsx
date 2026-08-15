@@ -11,7 +11,11 @@ type Approval = {
 
 const number = new Intl.NumberFormat("en-US");
 
-async function requestAnalysis(clientId: string, lookbackDays: 60 | 90 | 120) {
+async function requestAnalysis(
+  clientId: string,
+  lookbackDays: 60 | 90 | 120,
+  onProgress: (message: string) => void,
+) {
   while (true) {
     const response = await fetch("/api/analyze", {
       method: "POST",
@@ -20,6 +24,12 @@ async function requestAnalysis(clientId: string, lookbackDays: 60 | 90 | 120) {
     });
     const payload = await response.json();
     if (response.status === 202) {
+      const progress = payload.progress;
+      onProgress(
+        progress
+          ? `${payload.message} Saved ${progress.shipments} shipments, ${progress.inventory} inventory rows, and ${progress.kits} kits.`
+          : payload.message,
+      );
       await new Promise((resolve) =>
         setTimeout(resolve, payload.retryAfterMs ?? 2_500),
       );
@@ -43,6 +53,7 @@ export default function Home() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisProgress, setAnalysisProgress] = useState("");
   const [error, setError] = useState("");
   const [approval, setApproval] = useState<Approval | null>(null);
   const [activePage, setActivePage] = useState("Recommendations");
@@ -66,10 +77,15 @@ export default function Home() {
   async function analyze() {
     setLoading(true);
     setAnalysisLoading(true);
+    setAnalysisProgress("Starting the ShipHero data pull…");
     setError("");
     setApproval(null);
     try {
-      const payload = await requestAnalysis(clientId, lookbackDays);
+      const payload = await requestAnalysis(
+        clientId,
+        lookbackDays,
+        setAnalysisProgress,
+      );
       setAnalysis(payload);
       setSelected(new Set(payload.recommendations.map((item) => item.id)));
     } catch (reason) {
@@ -148,7 +164,7 @@ export default function Home() {
         </section>
 
         {error && <div className="notice error">{error}</div>}
-        {analysisLoading && <div className="notice" style={{ background: "#edf5f0", color: "#285f47", border: "1px solid #cfe2d7" }}><strong>Analysis in progress.</strong> ShipHero may pause between pages to protect the shared API credits. Keep this page open.</div>}
+        {analysisLoading && <div className="notice" style={{ background: "#edf5f0", color: "#285f47", border: "1px solid #cfe2d7" }}><strong>Analysis in progress.</strong> {analysisProgress} Keep this page open.</div>}
         {analysis && <>
           <div className="run-meta"><span className={`mode-pill ${analysis.mode}`}>{analysis.mode === "demo" ? "Demo analysis" : "Live analysis"}</span><span>Generated {new Date(analysis.generatedAt).toLocaleString()}</span><span>·</span><span>Kits expanded to physical components</span></div>
           <section className="metrics">

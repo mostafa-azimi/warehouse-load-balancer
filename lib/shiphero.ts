@@ -11,9 +11,9 @@ import { getShipHeroAccessToken } from "./shiphero-token-store";
 
 const ENDPOINT = "https://public-api.shiphero.com/graphql";
 // Keep estimated reservations modest because the 3PL credit pool is shared.
-const PAGE_SIZE = 5;
+const PAGE_SIZE = 3;
 const HEAVY_PAGE_CREDITS = PAGE_SIZE * 100 + 11;
-const CREDIT_SAFETY_RESERVE = 250;
+const CREDIT_SAFETY_RESERVE = 50;
 const DEFAULT_REQUEST_WINDOW_MS = 20_000;
 const CLIENT_CACHE_KEY = "warehouse-load-balancer:clients:v1";
 const ANALYSIS_PROGRESS_SECONDS = 60 * 60;
@@ -40,6 +40,7 @@ type UserQuota = {
 
 export class ShipHeroBusyError extends Error {
   retryAfterMs: number;
+  progress?: LiveAnalysisProgress;
 
   constructor(message: string, retryAfterMs = 2_500) {
     super(message);
@@ -47,6 +48,13 @@ export class ShipHeroBusyError extends Error {
     this.retryAfterMs = retryAfterMs;
   }
 }
+
+export type LiveAnalysisProgress = {
+  stage: "shipments" | "inventory" | "kits" | "complete";
+  shipments: number;
+  inventory: number;
+  kits: number;
+};
 
 const sleep = (milliseconds: number) =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -352,6 +360,35 @@ export async function clearLiveAnalysisProgress(
   const redis = getRedis();
   const key = progressKeys(client, lookbackDays);
   await redis.del(key.window, key.shipments, key.inventory, key.products);
+}
+
+export async function getLiveAnalysisProgress(
+  client: ClientAccount,
+  lookbackDays: 60 | 90 | 120,
+): Promise<LiveAnalysisProgress> {
+  if (!redisConfigured()) {
+    return { stage: "shipments", shipments: 0, inventory: 0, kits: 0 };
+  }
+  const redis = getRedis();
+  const key = progressKeys(client, lookbackDays);
+  const [shipments, inventory, products] = await Promise.all([
+    redis.get<{ rows: unknown[]; complete: boolean }>(key.shipments),
+    redis.get<{ rows: unknown[]; complete: boolean }>(key.inventory),
+    redis.get<{ rows: unknown[]; complete: boolean }>(key.products),
+  ]);
+  const stage: LiveAnalysisProgress["stage"] = products?.complete
+    ? "complete"
+    : inventory?.complete
+      ? "kits"
+      : shipments?.complete
+        ? "inventory"
+        : "shipments";
+  return {
+    stage,
+    shipments: shipments?.rows.length ?? 0,
+    inventory: inventory?.rows.length ?? 0,
+    kits: products?.rows.length ?? 0,
+  };
 }
 
 export async function getLiveAnalysisInput(

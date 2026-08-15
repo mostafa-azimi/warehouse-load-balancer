@@ -32,6 +32,7 @@ export async function POST(request: NextRequest) {
           status: "running",
           message: error.message,
           retryAfterMs: error.retryAfterMs,
+          progress: error.progress,
         },
         { status: 202 },
       );

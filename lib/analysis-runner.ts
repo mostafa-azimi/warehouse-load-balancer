@@ -2,6 +2,7 @@ import { buildAnalysis } from "./balancing";
 import { getRedis, redisConfigured } from "./redis";
 import {
   clearLiveAnalysisProgress,
+  getLiveAnalysisProgress,
   getLiveAnalysisInput,
   ShipHeroBusyError,
 } from "./shiphero";
@@ -55,6 +56,11 @@ export async function runLiveAnalysis(
         await redis.set(key.cache, result, { ex: CACHE_SECONDS });
         await clearLiveAnalysisProgress(client, lookbackDays);
         return result;
+      } catch (error) {
+        if (error instanceof ShipHeroBusyError) {
+          error.progress = await getLiveAnalysisProgress(client, lookbackDays);
+        }
+        throw error;
       } finally {
         if ((await redis.get<string>(key.lock)) === lockId) {
           await redis.del(key.lock);
@@ -67,8 +73,10 @@ export async function runLiveAnalysis(
     if (sharedResult) return sharedResult;
   }
 
-  throw new ShipHeroBusyError(
+  const error = new ShipHeroBusyError(
     "Another request is advancing this analysis. This page will continue automatically.",
     1_500,
   );
+  error.progress = await getLiveAnalysisProgress(client, lookbackDays);
+  throw error;
 }
