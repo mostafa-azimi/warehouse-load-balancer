@@ -9,8 +9,9 @@ import type {
 import { getShipHeroAccessToken } from "./shiphero-token-store";
 
 const ENDPOINT = "https://public-api.shiphero.com/graphql";
-// 25 shipments x up to 100 nested line items stays below ShipHero's 4,004-credit cap.
-const PAGE_SIZE = 25;
+// Keep estimated reservations modest because the 3PL credit pool is shared.
+const PAGE_SIZE = 10;
+const MAX_THROTTLE_ATTEMPTS = 6;
 
 type GraphQLError = {
   message: string;
@@ -27,7 +28,7 @@ type CustomerNode = {
 };
 
 async function request<T>(query: string, variables: Record<string, unknown>) {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < MAX_THROTTLE_ATTEMPTS; attempt += 1) {
     const token = await getShipHeroAccessToken();
     const response = await fetch(ENDPOINT, {
       method: "POST",
@@ -56,7 +57,12 @@ async function request<T>(query: string, variables: Record<string, unknown>) {
       const seconds = Number(waitText.match(/(\d+)\s*seconds?/i)?.[1] ?? 0);
       const minutes = Number(waitText.match(/(\d+)\s*minutes?/i)?.[1] ?? 0);
       const waitMs = (minutes * 60 + seconds) * 1_000;
-      if (throttled && attempt < 2 && waitMs > 0 && waitMs <= 60_000) {
+      if (
+        throttled &&
+        attempt < MAX_THROTTLE_ATTEMPTS - 1 &&
+        waitMs > 0 &&
+        waitMs <= 60_000
+      ) {
         await new Promise((resolve) => setTimeout(resolve, waitMs + 1_000));
         continue;
       }
