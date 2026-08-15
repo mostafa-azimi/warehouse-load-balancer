@@ -34,6 +34,7 @@ export default function Home() {
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
   const [error, setError] = useState("");
   const [approval, setApproval] = useState<Approval | null>(null);
   const [activePage, setActivePage] = useState("Recommendations");
@@ -45,24 +46,18 @@ export default function Home() {
         if (!response.ok) throw new Error(payload.error);
         return payload;
       })
-      .then(async (payload) => {
+      .then((payload) => {
         setClients(payload.clients);
         setMode(payload.mode);
         const firstClientId = payload.clients[0]?.id ?? "";
         setClientId(firstClientId);
-        if (firstClientId) {
-          const initialAnalysis = await requestAnalysis(firstClientId, 90);
-          setAnalysis(initialAnalysis);
-          setSelected(
-            new Set(initialAnalysis.recommendations.map((item) => item.id)),
-          );
-        }
       })
       .catch((reason) => setError(reason.message));
   }, []);
 
   async function analyze() {
     setLoading(true);
+    setAnalysisLoading(true);
     setError("");
     setApproval(null);
     try {
@@ -73,6 +68,7 @@ export default function Home() {
       setError(reason instanceof Error ? reason.message : "Analysis failed");
     } finally {
       setLoading(false);
+      setAnalysisLoading(false);
     }
   }
 
@@ -144,6 +140,7 @@ export default function Home() {
         </section>
 
         {error && <div className="notice error">{error}</div>}
+        {analysisLoading && <div className="notice" style={{ background: "#edf5f0", color: "#285f47", border: "1px solid #cfe2d7" }}><strong>Analysis in progress.</strong> ShipHero may pause between pages to protect the shared API credits. Keep this page open.</div>}
         {analysis && <>
           <div className="run-meta"><span className={`mode-pill ${analysis.mode}`}>{analysis.mode === "demo" ? "Demo analysis" : "Live analysis"}</span><span>Generated {new Date(analysis.generatedAt).toLocaleString()}</span><span>·</span><span>Kits expanded to physical components</span></div>
           <section className="metrics">

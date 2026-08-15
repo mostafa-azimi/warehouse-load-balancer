@@ -1,4 +1,4 @@
-import { Redis } from "@upstash/redis";
+import { getRedis, redisConfigured } from "./redis";
 
 const TOKEN_KEY = "warehouse-load-balancer:shiphero:oauth";
 const LOCK_KEY = `${TOKEN_KEY}:refresh-lock`;
@@ -19,20 +19,6 @@ export type RefreshResult = {
   nextRefreshAt: string;
   expiresAt: string;
 };
-
-function redisConfigured() {
-  return Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN);
-}
-
-function redis() {
-  if (!redisConfigured()) {
-    throw new Error("The Upstash Redis integration is not configured");
-  }
-  return new Redis({
-    url: process.env.KV_REST_API_URL!,
-    token: process.env.KV_REST_API_TOKEN!,
-  });
-}
 
 function jwtTimes(token: string) {
   try {
@@ -65,7 +51,7 @@ function bootstrapTokenState(): TokenState {
 
 async function getTokenState() {
   if (!redisConfigured()) return bootstrapTokenState();
-  const client = redis();
+  const client = getRedis();
   const stored = await client.get<TokenState>(TOKEN_KEY);
   if (stored) return stored;
   const bootstrap = bootstrapTokenState();
@@ -130,7 +116,7 @@ export async function refreshShipHeroTokens(force = false): Promise<RefreshResul
   if (!redisConfigured()) {
     throw new Error("Redis is required before automatic token refresh can run");
   }
-  const client = redis();
+  const client = getRedis();
   const lockId = crypto.randomUUID();
   const lock = await client.set(LOCK_KEY, lockId, { nx: true, ex: 60 });
   if (!lock) {

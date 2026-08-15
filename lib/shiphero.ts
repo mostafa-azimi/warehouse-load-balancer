@@ -6,12 +6,16 @@ import type {
   ShipmentLine,
   Warehouse,
 } from "./types";
+import { getRedis, redisConfigured } from "./redis";
 import { getShipHeroAccessToken } from "./shiphero-token-store";
 
 const ENDPOINT = "https://public-api.shiphero.com/graphql";
 // Keep estimated reservations modest because the 3PL credit pool is shared.
-const PAGE_SIZE = 10;
-const MAX_THROTTLE_ATTEMPTS = 6;
+const PAGE_SIZE = 5;
+const HEAVY_PAGE_CREDITS = PAGE_SIZE * 100 + 11;
+const CREDIT_SAFETY_RESERVE = 250;
+const DEFAULT_REQUEST_WINDOW_MS = 4 * 60 * 1_000;
+const CLIENT_CACHE_KEY = "warehouse-load-balancer:clients:v1";
 
 type GraphQLError = {
   message: string;
@@ -27,9 +31,84 @@ type CustomerNode = {
   warehouse_relationship: { from_name: string } | null;
 };
 
-async function request<T>(query: string, variables: Record<string, unknown>) {
-  for (let attempt = 0; attempt < MAX_THROTTLE_ATTEMPTS; attempt += 1) {
+type UserQuota = {
+  credits_remaining: number;
+  max_available: number;
+  increment_rate: number;
+};
+
+const sleep = (milliseconds: number) =>
+  new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+function throttleWaitMs(errors: GraphQLError[]) {
+  const message = errors.map((error) => error.message).join("; ");
+  const waitText =
+    errors.find((error) => error.extensions?.time_remaining)?.extensions
+      ?.time_remaining ?? message;
+  const seconds = Number(waitText.match(/(\d+)\s*seconds?/i)?.[1] ?? 0);
+  const minutes = Number(waitText.match(/(\d+)\s*minutes?/i)?.[1] ?? 0);
+  return (minutes * 60 + seconds) * 1_000;
+}
+
+async function getUserQuota(token: string): Promise<UserQuota | null> {
+  try {
+    const response = await fetch(ENDPOINT, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query:
+          "query LoadBalancerQuota { user_quota { credits_remaining max_available increment_rate } }",
+      }),
+      cache: "no-store",
+    });
+    if (!response.ok) return null;
+    const payload = (await response.json()) as {
+      data?: { user_quota?: UserQuota };
+    };
+    return payload.data?.user_quota ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function waitForCredits(
+  token: string,
+  requiredCredits: number,
+  deadline: number,
+) {
+  if (!requiredCredits) return;
+  while (Date.now() < deadline) {
+    const quota = await getUserQuota(token);
+    if (!quota) return;
+    const target = Math.min(
+      quota.max_available,
+      requiredCredits + CREDIT_SAFETY_RESERVE,
+    );
+    if (quota.credits_remaining >= target) return;
+    const restoreRate = Math.max(1, quota.increment_rate);
+    const waitMs =
+      Math.ceil((target - quota.credits_remaining) / restoreRate) * 1_000 +
+      750;
+    if (Date.now() + waitMs >= deadline) break;
+    await sleep(waitMs);
+  }
+  throw new Error(
+    "ShipHero is busy with other account activity. Please run the analysis again in a minute.",
+  );
+}
+
+async function request<T>(
+  query: string,
+  variables: Record<string, unknown>,
+  requiredCredits = 0,
+  deadline = Date.now() + DEFAULT_REQUEST_WINDOW_MS,
+) {
+  while (Date.now() < deadline) {
     const token = await getShipHeroAccessToken();
+    await waitForCredits(token, requiredCredits, deadline);
     const response = await fetch(ENDPOINT, {
       method: "POST",
       headers: {
@@ -39,6 +118,13 @@ async function request<T>(query: string, variables: Record<string, unknown>) {
       body: JSON.stringify({ query, variables }),
       cache: "no-store",
     });
+    if (response.status === 429) {
+      const retryAfter = Number(response.headers.get("retry-after") ?? 5);
+      const waitMs = Math.max(1, retryAfter) * 1_000 + 750;
+      if (Date.now() + waitMs >= deadline) break;
+      await sleep(waitMs);
+      continue;
+    }
     const payload = (await response.json()) as {
       data?: T;
       errors?: GraphQLError[];
@@ -51,19 +137,9 @@ async function request<T>(query: string, variables: Record<string, unknown>) {
           error.extensions?.code === 30 ||
           /not enough credits|throttl/i.test(error.message),
       );
-      const waitText =
-        payload.errors.find((error) => error.extensions?.time_remaining)
-          ?.extensions?.time_remaining ?? message;
-      const seconds = Number(waitText.match(/(\d+)\s*seconds?/i)?.[1] ?? 0);
-      const minutes = Number(waitText.match(/(\d+)\s*minutes?/i)?.[1] ?? 0);
-      const waitMs = (minutes * 60 + seconds) * 1_000;
-      if (
-        throttled &&
-        attempt < MAX_THROTTLE_ATTEMPTS - 1 &&
-        waitMs > 0 &&
-        waitMs <= 60_000
-      ) {
-        await new Promise((resolve) => setTimeout(resolve, waitMs + 1_000));
+      const waitMs = throttleWaitMs(payload.errors) || 5_000;
+      if (throttled && Date.now() + waitMs + 750 < deadline) {
+        await sleep(waitMs + 750);
         continue;
       }
       throw new Error(message);
@@ -72,7 +148,9 @@ async function request<T>(query: string, variables: Record<string, unknown>) {
     if (!payload.data) throw new Error("ShipHero returned no data");
     return payload.data;
   }
-  throw new Error("ShipHero request failed after throttling retries");
+  throw new Error(
+    "ShipHero remained busy for several minutes. No data was lost; please run the analysis again.",
+  );
 }
 
 export function isLiveMode() {
@@ -101,6 +179,7 @@ async function fetchAccessibleCustomers(): Promise<CustomerNode[]> {
         }
       }`,
       { after },
+      150,
     );
 
     if (!data.account.data) {
@@ -162,13 +241,25 @@ function allowedCustomers(nodes: CustomerNode[]) {
 }
 
 export async function getLiveClientAccessStatus() {
+  if (redisConfigured()) {
+    const cached = await getRedis().get<{
+      clients: ClientAccount[];
+      accessibleCustomerCount: number;
+      eligibleCustomerCount: number;
+    }>(CLIENT_CACHE_KEY);
+    if (cached) return cached;
+  }
   const accessibleCustomers = await fetchAccessibleCustomers();
   const clients = allowedCustomers(accessibleCustomers);
-  return {
+  const status = {
     clients,
     accessibleCustomerCount: accessibleCustomers.length,
     eligibleCustomerCount: clients.length,
   };
+  if (redisConfigured()) {
+    await getRedis().set(CLIENT_CACHE_KEY, status, { ex: 15 * 60 });
+  }
+  return status;
 }
 
 export async function listLiveClients(): Promise<ClientAccount[]> {
@@ -204,6 +295,7 @@ export async function getLiveAnalysisInput(
     from: from.toISOString(),
     to: to.toISOString(),
   };
+  const deadline = Date.now() + DEFAULT_REQUEST_WINDOW_MS;
 
   // Run these credit-heavy connections sequentially. Concurrent requests reserve
   // their estimated complexity at the same time and can exhaust a shared 3PL pool.
@@ -221,6 +313,8 @@ export async function getLiveAnalysisInput(
           }
         }`,
       { ...variables, after },
+      HEAVY_PAGE_CREDITS,
+      deadline,
     );
     return data.shipments.data;
   });
@@ -238,6 +332,8 @@ export async function getLiveAnalysisInput(
           }
         }`,
       { customerAccountId: client.id, after },
+      HEAVY_PAGE_CREDITS,
+      deadline,
     );
     return data.warehouse_products.data;
   });
@@ -255,6 +351,8 @@ export async function getLiveAnalysisInput(
           }
         }`,
       { customerAccountId: client.id, after },
+      HEAVY_PAGE_CREDITS,
+      deadline,
     );
     return data.products.data;
   });
