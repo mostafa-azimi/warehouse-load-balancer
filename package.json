@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@upstash/redis": "^1.38.2",
     "next": "latest",
     "react": "latest",
     "react-dom": "latest"

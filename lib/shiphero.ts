@@ -6,6 +6,7 @@ import type {
   ShipmentLine,
   Warehouse,
 } from "./types";
+import { getShipHeroAccessToken } from "./shiphero-token-store";
 
 const ENDPOINT = "https://public-api.shiphero.com/graphql";
 // 25 shipments x up to 100 nested line items stays below ShipHero's 4,004-credit cap.
@@ -14,8 +15,7 @@ const PAGE_SIZE = 25;
 type GraphQLError = { message: string; code?: number };
 
 async function request<T>(query: string, variables: Record<string, unknown>) {
-  const token = process.env.SHIPHERO_ACCESS_TOKEN;
-  if (!token) throw new Error("SHIPHERO_ACCESS_TOKEN is not configured");
+  const token = await getShipHeroAccessToken();
   const response = await fetch(ENDPOINT, {
     method: "POST",
     headers: {
