@@ -32,9 +32,13 @@ Copy `.env.example` to `.env.local` and set:
 SHIPHERO_ACCESS_TOKEN=your_server_side_token
 ALLOWED_CUSTOMER_ACCOUNT_IDS=10001=Example Client,10002=Another Client
 SHIPHERO_WRITE_MODE=preview
+APP_USERNAME=your_private_username
+APP_PASSWORD=use_a_password_manager_generated_value
 ```
 
 `ALLOWED_CUSTOMER_ACCOUNT_IDS` is mandatory in live mode. It accepts either ShipHero public API IDs or numeric account numbers. Use `account=name` to override the dropdown's plain-text display name. If it is empty, no customer accounts are exposed. Never prefix a server secret with `NEXT_PUBLIC_`.
+
+`APP_USERNAME` and `APP_PASSWORD` protect both the interface and API routes with HTTP Basic authentication. The deployed app fails closed when either is missing.
 
 ## Deploy to Vercel
 
