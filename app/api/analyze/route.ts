@@ -5,6 +5,8 @@ import { getLiveAnalysisInput, isLiveMode, listLiveClients } from "@/lib/shipher
 
 const validLookbacks = new Set([60, 90, 120]);
 
+export const maxDuration = 300;
+
 export async function POST(request: NextRequest) {
   try {
     const body = (await request.json()) as { clientId?: string; lookbackDays?: number };

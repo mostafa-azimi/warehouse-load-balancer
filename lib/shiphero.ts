@@ -12,7 +12,11 @@ const ENDPOINT = "https://public-api.shiphero.com/graphql";
 // 25 shipments x up to 100 nested line items stays below ShipHero's 4,004-credit cap.
 const PAGE_SIZE = 25;
 
-type GraphQLError = { message: string; code?: number };
+type GraphQLError = {
+  message: string;
+  code?: number;
+  extensions?: { code?: number; time_remaining?: string };
+};
 
 type CustomerNode = {
   id: string;
@@ -23,26 +27,46 @@ type CustomerNode = {
 };
 
 async function request<T>(query: string, variables: Record<string, unknown>) {
-  const token = await getShipHeroAccessToken();
-  const response = await fetch(ENDPOINT, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ query, variables }),
-    cache: "no-store",
-  });
-  const payload = (await response.json()) as {
-    data?: T;
-    errors?: GraphQLError[];
-  };
-  if (payload.errors?.length) {
-    throw new Error(payload.errors.map((error) => error.message).join("; "));
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const token = await getShipHeroAccessToken();
+    const response = await fetch(ENDPOINT, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ query, variables }),
+      cache: "no-store",
+    });
+    const payload = (await response.json()) as {
+      data?: T;
+      errors?: GraphQLError[];
+    };
+    if (payload.errors?.length) {
+      const message = payload.errors.map((error) => error.message).join("; ");
+      const throttled = payload.errors.some(
+        (error) =>
+          error.code === 30 ||
+          error.extensions?.code === 30 ||
+          /not enough credits|throttl/i.test(error.message),
+      );
+      const waitText =
+        payload.errors.find((error) => error.extensions?.time_remaining)
+          ?.extensions?.time_remaining ?? message;
+      const seconds = Number(waitText.match(/(\d+)\s*seconds?/i)?.[1] ?? 0);
+      const minutes = Number(waitText.match(/(\d+)\s*minutes?/i)?.[1] ?? 0);
+      const waitMs = (minutes * 60 + seconds) * 1_000;
+      if (throttled && attempt < 2 && waitMs > 0 && waitMs <= 60_000) {
+        await new Promise((resolve) => setTimeout(resolve, waitMs + 1_000));
+        continue;
+      }
+      throw new Error(message);
+    }
+    if (!response.ok) throw new Error(`ShipHero returned HTTP ${response.status}`);
+    if (!payload.data) throw new Error("ShipHero returned no data");
+    return payload.data;
   }
-  if (!response.ok) throw new Error(`ShipHero returned HTTP ${response.status}`);
-  if (!payload.data) throw new Error("ShipHero returned no data");
-  return payload.data;
+  throw new Error("ShipHero request failed after throttling retries");
 }
 
 export function isLiveMode() {
@@ -175,12 +199,13 @@ export async function getLiveAnalysisInput(
     to: to.toISOString(),
   };
 
-  const [shipmentRows, inventoryRows, productRows] = await Promise.all([
-    paginate(async (after) => {
-      const data = await request<{
-        shipments: { data: Connection<{ warehouse_id: string; line_items: { edges: Array<{ node: { quantity: number; line_item: { sku: string } } }> } }> };
-      }>(
-        `query ShippedDemand($customerAccountId: String!, $from: ISODateTime!, $to: ISODateTime!, $after: String) {
+  // Run these credit-heavy connections sequentially. Concurrent requests reserve
+  // their estimated complexity at the same time and can exhaust a shared 3PL pool.
+  const shipmentRows = await paginate(async (after) => {
+    const data = await request<{
+      shipments: { data: Connection<{ warehouse_id: string; line_items: { edges: Array<{ node: { quantity: number; line_item: { sku: string } } }> } }> };
+    }>(
+      `query ShippedDemand($customerAccountId: String!, $from: ISODateTime!, $to: ISODateTime!, $after: String) {
           shipments(customer_account_id: $customerAccountId, date_from: $from, date_to: $to, voided: false) {
             request_id complexity
             data(first: ${PAGE_SIZE}, after: $after) {
@@ -189,15 +214,15 @@ export async function getLiveAnalysisInput(
             }
           }
         }`,
-        { ...variables, after },
-      );
-      return data.shipments.data;
-    }),
-    paginate(async (after) => {
-      const data = await request<{
-        warehouse_products: { data: Connection<{ sku: string; available: number; on_hand: number; allocated: number; warehouse_id: string; warehouse: { id: string; identifier: string; address: { name: string } }; product: { name: string } }> };
-      }>(
-        `query CurrentInventory($customerAccountId: String!, $after: String) {
+      { ...variables, after },
+    );
+    return data.shipments.data;
+  });
+  const inventoryRows = await paginate(async (after) => {
+    const data = await request<{
+      warehouse_products: { data: Connection<{ sku: string; available: number; on_hand: number; allocated: number; warehouse_id: string; warehouse: { id: string; identifier: string; address: { name: string } }; product: { name: string } }> };
+    }>(
+      `query CurrentInventory($customerAccountId: String!, $after: String) {
           warehouse_products(customer_account_id: $customerAccountId, active: true) {
             request_id complexity
             data(first: ${PAGE_SIZE}, after: $after) {
@@ -206,15 +231,15 @@ export async function getLiveAnalysisInput(
             }
           }
         }`,
-        { customerAccountId: client.id, after },
-      );
-      return data.warehouse_products.data;
-    }),
-    paginate(async (after) => {
-      const data = await request<{
-        products: { data: Connection<{ sku: string; kit_components: Array<{ sku: string; quantity: number }> }> };
-      }>(
-        `query KitDefinitions($customerAccountId: String!, $after: String) {
+      { customerAccountId: client.id, after },
+    );
+    return data.warehouse_products.data;
+  });
+  const productRows = await paginate(async (after) => {
+    const data = await request<{
+      products: { data: Connection<{ sku: string; kit_components: Array<{ sku: string; quantity: number }> }> };
+    }>(
+      `query KitDefinitions($customerAccountId: String!, $after: String) {
           products(customer_account_id: $customerAccountId, has_kits: true) {
             request_id complexity
             data(first: ${PAGE_SIZE}, after: $after) {
@@ -223,11 +248,10 @@ export async function getLiveAnalysisInput(
             }
           }
         }`,
-        { customerAccountId: client.id, after },
-      );
-      return data.products.data;
-    }),
-  ]);
+      { customerAccountId: client.id, after },
+    );
+    return data.products.data;
+  });
 
   const warehouseMap = new Map<string, Warehouse>();
   const inventory: InventoryRecord[] = inventoryRows.map((row) => {
