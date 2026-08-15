@@ -14,6 +14,14 @@ const PAGE_SIZE = 25;
 
 type GraphQLError = { message: string; code?: number };
 
+type CustomerNode = {
+  id: string;
+  legacy_id: number;
+  username: string;
+  email: string;
+  warehouse_relationship: { from_name: string } | null;
+};
+
 async function request<T>(query: string, variables: Record<string, unknown>) {
   const token = await getShipHeroAccessToken();
   const response = await fetch(ENDPOINT, {
@@ -41,14 +49,16 @@ export function isLiveMode() {
   return Boolean(process.env.SHIPHERO_ACCESS_TOKEN);
 }
 
-export async function listLiveClients(): Promise<ClientAccount[]> {
+async function fetchAccessibleCustomers(): Promise<CustomerNode[]> {
   const data = await request<{
     account: {
+      request_id?: string;
       data: {
         customers: {
-          edges: Array<{ node: { id: string; legacy_id: number; username: string; email: string; warehouse_relationship: { from_name: string } | null } }>;
+          edges: Array<{ node: CustomerNode }>;
         };
-      };
+      } | null;
+      errors?: GraphQLError[];
     };
   }>(
     `query EligibleCustomers {
@@ -59,10 +69,29 @@ export async function listLiveClients(): Promise<ClientAccount[]> {
             edges { node { id legacy_id username email warehouse_relationship { from_name } } }
           }
         }
+        errors { message code }
       }
     }`,
     {},
   );
+
+  if (data.account.errors?.length) {
+    const details = data.account.errors
+      .map((error) => `${error.message}${error.code ? ` (code ${error.code})` : ""}`)
+      .join("; ");
+    throw new Error(
+      `ShipHero account query failed: ${details}${data.account.request_id ? ` [request ${data.account.request_id}]` : ""}`,
+    );
+  }
+  if (!data.account.data) {
+    throw new Error(
+      `ShipHero account query returned no data${data.account.request_id ? ` [request ${data.account.request_id}]` : ""}`,
+    );
+  }
+  return data.account.data.customers.edges.map(({ node }) => node);
+}
+
+function allowedCustomers(nodes: CustomerNode[]) {
   const allowed = new Map(
     (process.env.ALLOWED_CUSTOMER_ACCOUNT_IDS ?? "")
       .split(",")
@@ -76,8 +105,8 @@ export async function listLiveClients(): Promise<ClientAccount[]> {
       }),
   );
   if (!allowed.size) return [];
-  return data.account.data.customers.edges
-    .map(({ node }) => {
+  return nodes
+    .map((node) => {
       const legacyAccountNumber = String(node.legacy_id);
       const accountNumber = /^\d+$/.test(node.username?.trim())
         ? node.username.trim()
@@ -109,6 +138,20 @@ export async function listLiveClients(): Promise<ClientAccount[]> {
       accountNumber: client.accountNumber,
       name: client.name,
     }));
+}
+
+export async function getLiveClientAccessStatus() {
+  const accessibleCustomers = await fetchAccessibleCustomers();
+  const clients = allowedCustomers(accessibleCustomers);
+  return {
+    clients,
+    accessibleCustomerCount: accessibleCustomers.length,
+    eligibleCustomerCount: clients.length,
+  };
+}
+
+export async function listLiveClients(): Promise<ClientAccount[]> {
+  return (await getLiveClientAccessStatus()).clients;
 }
 
 type Connection<T> = {
