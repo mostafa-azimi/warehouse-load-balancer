@@ -14,8 +14,9 @@ const ENDPOINT = "https://public-api.shiphero.com/graphql";
 const PAGE_SIZE = 5;
 const HEAVY_PAGE_CREDITS = PAGE_SIZE * 100 + 11;
 const CREDIT_SAFETY_RESERVE = 250;
-const DEFAULT_REQUEST_WINDOW_MS = 4 * 60 * 1_000;
+const DEFAULT_REQUEST_WINDOW_MS = 20_000;
 const CLIENT_CACHE_KEY = "warehouse-load-balancer:clients:v1";
+const ANALYSIS_PROGRESS_SECONDS = 60 * 60;
 
 type GraphQLError = {
   message: string;
@@ -36,6 +37,16 @@ type UserQuota = {
   max_available: number;
   increment_rate: number;
 };
+
+export class ShipHeroBusyError extends Error {
+  retryAfterMs: number;
+
+  constructor(message: string, retryAfterMs = 2_500) {
+    super(message);
+    this.name = "ShipHeroBusyError";
+    this.retryAfterMs = retryAfterMs;
+  }
+}
 
 const sleep = (milliseconds: number) =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -95,8 +106,8 @@ async function waitForCredits(
     if (Date.now() + waitMs >= deadline) break;
     await sleep(waitMs);
   }
-  throw new Error(
-    "ShipHero is busy with other account activity. Please run the analysis again in a minute.",
+  throw new ShipHeroBusyError(
+    "ShipHero is restoring shared API credits. The analysis will continue automatically.",
   );
 }
 
@@ -148,8 +159,8 @@ async function request<T>(
     if (!payload.data) throw new Error("ShipHero returned no data");
     return payload.data;
   }
-  throw new Error(
-    "ShipHero remained busy for several minutes. No data was lost; please run the analysis again.",
+  throw new ShipHeroBusyError(
+    "ShipHero is restoring shared API credits. The analysis will continue automatically.",
   );
 }
 
@@ -273,27 +284,86 @@ type Connection<T> = {
 
 async function paginate<T>(
   fetchPage: (after: string | null) => Promise<Connection<T>>,
+  progressKey?: string,
 ) {
-  const rows: T[] = [];
-  let after: string | null = null;
+  const redis = progressKey && redisConfigured() ? getRedis() : null;
+  const saved = redis
+    ? await redis.get<{
+        rows: T[];
+        after: string | null;
+        complete: boolean;
+      }>(progressKey!)
+    : null;
+  if (saved?.complete) return saved.rows;
+
+  const rows: T[] = saved?.rows ?? [];
+  let after: string | null = saved?.after ?? null;
   do {
     const page = await fetchPage(after);
     rows.push(...page.edges.map((edge) => edge.node));
     after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+    if (redis) {
+      await redis.set(
+        progressKey!,
+        { rows, after, complete: !after },
+        { ex: ANALYSIS_PROGRESS_SECONDS },
+      );
+    }
   } while (after);
   return rows;
+}
+
+function progressKeys(client: ClientAccount, lookbackDays: 60 | 90 | 120) {
+  const base = `warehouse-load-balancer:analysis-progress:v1:${client.id}:${lookbackDays}`;
+  return {
+    window: `${base}:window`,
+    shipments: `${base}:shipments`,
+    inventory: `${base}:inventory`,
+    products: `${base}:products`,
+  };
+}
+
+async function analysisWindow(
+  client: ClientAccount,
+  lookbackDays: 60 | 90 | 120,
+) {
+  const currentTo = new Date();
+  const candidate = {
+    from: new Date(
+      currentTo.getTime() - lookbackDays * 86_400_000,
+    ).toISOString(),
+    to: currentTo.toISOString(),
+  };
+  if (!redisConfigured()) return candidate;
+  const redis = getRedis();
+  const key = progressKeys(client, lookbackDays).window;
+  await redis.set(key, candidate, {
+    nx: true,
+    ex: ANALYSIS_PROGRESS_SECONDS,
+  });
+  return (await redis.get<typeof candidate>(key)) ?? candidate;
+}
+
+export async function clearLiveAnalysisProgress(
+  client: ClientAccount,
+  lookbackDays: 60 | 90 | 120,
+) {
+  if (!redisConfigured()) return;
+  const redis = getRedis();
+  const key = progressKeys(client, lookbackDays);
+  await redis.del(key.window, key.shipments, key.inventory, key.products);
 }
 
 export async function getLiveAnalysisInput(
   client: ClientAccount,
   lookbackDays: 60 | 90 | 120,
 ): Promise<AnalysisInput> {
-  const to = new Date();
-  const from = new Date(to.getTime() - lookbackDays * 86_400_000);
+  const window = await analysisWindow(client, lookbackDays);
+  const progress = progressKeys(client, lookbackDays);
   const variables = {
     customerAccountId: client.id,
-    from: from.toISOString(),
-    to: to.toISOString(),
+    from: window.from,
+    to: window.to,
   };
   const deadline = Date.now() + DEFAULT_REQUEST_WINDOW_MS;
 
@@ -317,7 +387,7 @@ export async function getLiveAnalysisInput(
       deadline,
     );
     return data.shipments.data;
-  });
+  }, progress.shipments);
   const inventoryRows = await paginate(async (after) => {
     const data = await request<{
       warehouse_products: { data: Connection<{ sku: string; available: number; on_hand: number; allocated: number; warehouse_id: string; warehouse: { id: string; identifier: string; address: { name: string } }; product: { name: string } }> };
@@ -336,7 +406,7 @@ export async function getLiveAnalysisInput(
       deadline,
     );
     return data.warehouse_products.data;
-  });
+  }, progress.inventory);
   const productRows = await paginate(async (after) => {
     const data = await request<{
       products: { data: Connection<{ sku: string; kit_components: Array<{ sku: string; quantity: number }> }> };
@@ -355,7 +425,7 @@ export async function getLiveAnalysisInput(
       deadline,
     );
     return data.products.data;
-  });
+  }, progress.products);
 
   const warehouseMap = new Map<string, Warehouse>();
   const inventory: InventoryRecord[] = inventoryRows.map((row) => {

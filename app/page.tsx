@@ -12,14 +12,22 @@ type Approval = {
 const number = new Intl.NumberFormat("en-US");
 
 async function requestAnalysis(clientId: string, lookbackDays: 60 | 90 | 120) {
-  const response = await fetch("/api/analyze", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ clientId, lookbackDays }),
-  });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error);
-  return payload as AnalysisResult;
+  while (true) {
+    const response = await fetch("/api/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clientId, lookbackDays }),
+    });
+    const payload = await response.json();
+    if (response.status === 202) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, payload.retryAfterMs ?? 2_500),
+      );
+      continue;
+    }
+    if (!response.ok) throw new Error(payload.error);
+    return payload as AnalysisResult;
+  }
 }
 
 function Logo() {

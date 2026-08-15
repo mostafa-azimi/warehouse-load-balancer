@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { buildAnalysis } from "@/lib/balancing";
 import { runLiveAnalysis } from "@/lib/analysis-runner";
 import { demoClients, getDemoInput } from "@/lib/demo-data";
-import { isLiveMode, listLiveClients } from "@/lib/shiphero";
+import { isLiveMode, listLiveClients, ShipHeroBusyError } from "@/lib/shiphero";
 
 const validLookbacks = new Set([60, 90, 120]);
 
@@ -26,6 +26,16 @@ export async function POST(request: NextRequest) {
     }
     return NextResponse.json(buildAnalysis(getDemoInput(body.clientId, lookbackDays)));
   } catch (error) {
+    if (error instanceof ShipHeroBusyError) {
+      return NextResponse.json(
+        {
+          status: "running",
+          message: error.message,
+          retryAfterMs: error.retryAfterMs,
+        },
+        { status: 202 },
+      );
+    }
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Analysis failed" },
       { status: 502 },

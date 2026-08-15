@@ -1,11 +1,15 @@
 import { buildAnalysis } from "./balancing";
 import { getRedis, redisConfigured } from "./redis";
-import { getLiveAnalysisInput } from "./shiphero";
+import {
+  clearLiveAnalysisProgress,
+  getLiveAnalysisInput,
+  ShipHeroBusyError,
+} from "./shiphero";
 import type { AnalysisResult, ClientAccount } from "./types";
 
 const CACHE_SECONDS = 10 * 60;
 const LOCK_SECONDS = 5 * 60;
-const WAIT_LIMIT_MS = 4.5 * 60 * 1_000;
+const WAIT_LIMIT_MS = 15_000;
 
 const sleep = (milliseconds: number) =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -49,6 +53,7 @@ export async function runLiveAnalysis(
       try {
         const result = await calculate(client, lookbackDays);
         await redis.set(key.cache, result, { ex: CACHE_SECONDS });
+        await clearLiveAnalysisProgress(client, lookbackDays);
         return result;
       } finally {
         if ((await redis.get<string>(key.lock)) === lockId) {
@@ -62,7 +67,8 @@ export async function runLiveAnalysis(
     if (sharedResult) return sharedResult;
   }
 
-  throw new Error(
-    "This analysis is already running. Please wait a moment and try again.",
+  throw new ShipHeroBusyError(
+    "Another request is advancing this analysis. This page will continue automatically.",
+    1_500,
   );
 }
