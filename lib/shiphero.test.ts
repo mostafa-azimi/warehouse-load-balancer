@@ -32,6 +32,7 @@ describe("ShipHero customer allowlist", () => {
             account: {
               data: {
                 customers: {
+                  pageInfo: { hasNextPage: false, endCursor: null },
                   edges: [
                     {
                       node: {

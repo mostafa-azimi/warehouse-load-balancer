@@ -50,35 +50,36 @@ export function isLiveMode() {
 }
 
 async function fetchAccessibleCustomers(): Promise<CustomerNode[]> {
-  const data = await request<{
-    account: {
-      request_id?: string;
-      data: {
-        customers: {
-          edges: Array<{ node: CustomerNode }>;
-        };
-      } | null;
-    };
-  }>(
-    `query EligibleCustomers {
-      account {
-        request_id complexity
-        data {
-          customers(first: 100) {
-            edges { node { id legacy_id username email warehouse_relationship { from_name } } }
+  return paginate(async (after) => {
+    const data = await request<{
+      account: {
+        request_id?: string;
+        data: {
+          customers: Connection<CustomerNode>;
+        } | null;
+      };
+    }>(
+      `query EligibleCustomers($after: String) {
+        account {
+          request_id complexity
+          data {
+            customers(first: 100, after: $after) {
+              pageInfo { hasNextPage endCursor }
+              edges { node { id legacy_id username email warehouse_relationship { from_name } } }
+            }
           }
         }
-      }
-    }`,
-    {},
-  );
-
-  if (!data.account.data) {
-    throw new Error(
-      `ShipHero account query returned no data${data.account.request_id ? ` [request ${data.account.request_id}]` : ""}`,
+      }`,
+      { after },
     );
-  }
-  return data.account.data.customers.edges.map(({ node }) => node);
+
+    if (!data.account.data) {
+      throw new Error(
+        `ShipHero account query returned no data${data.account.request_id ? ` [request ${data.account.request_id}]` : ""}`,
+      );
+    }
+    return data.account.data.customers;
+  });
 }
 
 function allowedCustomers(nodes: CustomerNode[]) {
