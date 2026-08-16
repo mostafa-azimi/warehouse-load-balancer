@@ -18,7 +18,7 @@ const sleep = (milliseconds: number) =>
 function keys(client: ClientAccount, lookbackDays: 60 | 90 | 120) {
   const suffix = `${client.id}:${lookbackDays}`;
   return {
-    cache: `warehouse-load-balancer:analysis:v2:${suffix}`,
+    cache: `warehouse-load-balancer:analysis:v4:${suffix}`,
     lock: `warehouse-load-balancer:analysis-lock:v1:${suffix}`,
   };
 }

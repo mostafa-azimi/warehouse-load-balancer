@@ -32,6 +32,9 @@ export function expandKits(
         sku: componentSku,
         quantity: line.quantity * component.quantity,
         warehouseId: line.warehouseId,
+        ...(typeof line.recentQuantity === "number"
+          ? { recentQuantity: line.recentQuantity * component.quantity }
+          : {}),
       });
       const sourceKey = key(componentSku, line.warehouseId);
       const sources = kitSources.get(sourceKey) ?? new Set<string>();
@@ -51,9 +54,19 @@ const daysOfCover = (available: number, demand: number, lookbackDays: number) =>
 export function buildAnalysis(input: AnalysisInput): AnalysisResult {
   const { expanded, kitSources } = expandKits(input.shipments, input.kits);
   const demand = new Map<string, number>();
+  const recentDemand = new Map<string, number>();
+  const hasRecencyData = expanded.some(
+    (line) => typeof line.recentQuantity === "number",
+  );
   for (const line of expanded) {
     const demandKey = key(line.sku, line.warehouseId);
     demand.set(demandKey, (demand.get(demandKey) ?? 0) + line.quantity);
+    if (typeof line.recentQuantity === "number") {
+      recentDemand.set(
+        demandKey,
+        (recentDemand.get(demandKey) ?? 0) + line.recentQuantity,
+      );
+    }
   }
 
   const inventory = new Map(
@@ -69,6 +82,12 @@ export function buildAnalysis(input: AnalysisInput): AnalysisResult {
       demand: demand.get(key(sku, warehouse.id)) ?? 0,
     }));
     const totalDemand = records.reduce((sum, row) => sum + row.demand, 0);
+    const recentDemand14Days = hasRecencyData
+      ? records.reduce(
+          (sum, row) => sum + (recentDemand.get(key(sku, row.warehouse.id)) ?? 0),
+          0,
+        )
+      : null;
     const totalAvailable = records.reduce(
       (sum, row) => sum + (row.inventory?.available ?? 0),
       0,
@@ -117,6 +136,30 @@ export function buildAnalysis(input: AnalysisInput): AnalysisResult {
         );
         const confidence: Recommendation["confidence"] =
           totalDemand >= 100 ? "High" : totalDemand >= 30 ? "Medium" : "Low";
+        const historicalDailyRate = totalDemand / input.lookbackDays;
+        const recentDailyRate = (recentDemand14Days ?? 0) / 14;
+        const recencyStatus: Recommendation["recencyStatus"] =
+          recentDemand14Days === null
+            ? "unknown"
+            : recentDemand14Days === 0
+              ? "inactive"
+              : recentDailyRate < historicalDailyRate * 0.5
+                ? "slowing"
+                : "active";
+        const adjustedConfidence: Recommendation["confidence"] =
+          recencyStatus === "inactive"
+            ? "Low"
+            : recencyStatus === "slowing" && confidence === "High"
+              ? "Medium"
+              : confidence;
+        const recencyReason =
+          recencyStatus === "inactive"
+            ? "No included shipments in the last 14 days. Confirm the SKU is still used before moving it."
+            : recencyStatus === "slowing"
+              ? `Only ${recentDemand14Days} units shipped in the last 14 days; its recent daily rate is less than half of the selected-window rate.`
+              : recencyStatus === "active"
+                ? `${recentDemand14Days} units shipped in the last 14 days, confirming current demand.`
+                : "A 14-day demand comparison is unavailable for this data source.";
 
         recommendations.push({
           id: `${sku}-${source.warehouse.id}-${destination.warehouse.id}`,
@@ -142,9 +185,12 @@ export function buildAnalysis(input: AnalysisInput): AnalysisResult {
             destination.demand,
             input.lookbackDays,
           ),
-          confidence,
+          confidence: adjustedConfidence,
           reason: `${destinationShare}% of recent demand shipped from ${destination.warehouse.code}, but only ${Math.round(((destination.inventory?.available ?? 0) / totalAvailable) * 100)}% of available stock is there.`,
           kitSources: affectedKits,
+          recentDemand14Days,
+          recencyStatus,
+          recencyReason,
         });
         deficit -= quantity;
         source.target += quantity;
@@ -156,6 +202,9 @@ export function buildAnalysis(input: AnalysisInput): AnalysisResult {
   recommendations.sort((a, b) => b.quantity - a.quantity);
   const shippedUnits = input.shipments.reduce((sum, row) => sum + row.quantity, 0);
   const componentUnits = expanded.reduce((sum, row) => sum + row.quantity, 0);
+  const recentUnits14Days = hasRecencyData
+    ? expanded.reduce((sum, row) => sum + (row.recentQuantity ?? 0), 0)
+    : null;
   const recommendedUnits = recommendations.reduce(
     (sum, row) => sum + row.quantity,
     0,
@@ -171,6 +220,7 @@ export function buildAnalysis(input: AnalysisInput): AnalysisResult {
       shippedUnits,
       componentUnits,
       activeSkus: skus.length,
+      recentUnits14Days,
       recommendedUnits,
       estimatedCoverageGainDays: recommendations.length
         ? Math.round(
@@ -184,5 +234,6 @@ export function buildAnalysis(input: AnalysisInput): AnalysisResult {
     recommendations,
     dataSource: input.dataSource ?? "shiphero-api",
     dataAsOf: input.dataAsOf,
+    exclusions: input.exclusions ?? [],
   };
 }

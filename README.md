@@ -9,6 +9,9 @@ A Vercel-ready Next.js application for 3PL inventory balancing across ShipHero w
 - Public GraphQL API fallback when the SQL export is not configured
 - Kit-component-aware demand calculation
 - Exclusion of orders marked as FBA, wholesale, or transfer activity
+- Explicit exclusion of shipments between Gardena/Primary and Atlanta
+- 14-day SKU activity checks with inactive and slowing-demand warnings
+- Optional OpenAI or Anthropic review configured through a protected settings page
 - Demand-share inventory balancing across two or more warehouses
 - Reviewable transfer recommendations with confidence, coverage, and rationale
 - Approval flow that generates paired sales-order and purchase-order drafts
@@ -41,6 +44,8 @@ ALLOWED_CUSTOMER_ACCOUNT_IDS=10001=Example Client,10002=Another Client
 
 The SQL credentials are server-only. The app queries shipped line items, current warehouse inventory, and kit/assembly mappings directly from the six-hourly export. It does not copy customer order history into Redis or Supabase. Redis only caches completed analysis results for ten minutes and coordinates concurrent runs.
 
+The demand query excludes orders identified by FBA/Amazon tags or destination fields, transfer or wholesale markers, and shipments on the known Gardena/Primary↔Atlanta internal route. The UI reports excluded order and unit counts with the signals that caused each exclusion. It does not exclude an order solely because it is large.
+
 When the SQL export is configured, it is the preferred analysis source. If it is not configured, the app can use the Public GraphQL API with:
 
 ```text
@@ -67,15 +72,23 @@ The Redis integration injects `KV_REST_API_URL` and `KV_REST_API_TOKEN`. `CRON_S
 
 The deployed application prefers the SQL export, so analysis no longer burns ShipHero API pagination credits. The Public API path remains available if the export settings are removed.
 
+## Optional AI review
+
+Set `AI_SETTINGS_ENCRYPTION_KEY` and `AI_SETTINGS_ADMIN_PASSWORD` on the server, then open `/settings`. The administrator can save either an OpenAI or Anthropic API key and model ID. The provider key is encrypted with AES-256-GCM before it is stored in Redis and is never returned to the browser. AI requests require the administrator password and are rate-limited. Only aggregated SKU, inventory, demand, warehouse, and exclusion data is sent; order-level customer information is not sent.
+
+AI is an optional second opinion. The transfer quantities and exclusions remain deterministic, reviewable application logic.
+
 ## Balancing model
 
 For each physical SKU, the engine:
 
 1. Expands shipped kit parents into component demand.
 2. Excludes orders identified by status or tags as FBA, wholesale, or transfer activity.
-3. Totals shipped component units by warehouse.
-4. Calculates each warehouse's share of demand.
-5. Applies that demand share to total currently available inventory.
-6. Recommends transfers from warehouses above their target to those below it.
+3. Excludes known Gardena/Primary↔Atlanta internal shipments.
+4. Checks the last 14 days to flag inactive or sharply slowing SKUs.
+5. Totals shipped component units by warehouse.
+6. Calculates each warehouse's share of demand.
+7. Applies that demand share to total currently available inventory.
+8. Recommends transfers from warehouses above their target to those below it.
 
 Transfers under four units are suppressed to avoid operational noise. The threshold and future safety-stock controls can be moved into per-client settings.

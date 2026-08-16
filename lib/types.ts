@@ -10,6 +10,14 @@ export type ShipmentLine = {
   sku: string;
   quantity: number;
   warehouseId: string;
+  recentQuantity?: number;
+};
+
+export type ExclusionSummary = {
+  category: "fba" | "internal-transfer" | "wholesale";
+  orders: number;
+  units: number;
+  signals: string[];
 };
 
 export type InventoryRecord = {
@@ -42,6 +50,9 @@ export type Recommendation = {
   confidence: "High" | "Medium" | "Low";
   reason: string;
   kitSources: string[];
+  recentDemand14Days: number | null;
+  recencyStatus: "active" | "slowing" | "inactive" | "unknown";
+  recencyReason: string;
 };
 
 export type AnalysisResult = {
@@ -54,12 +65,14 @@ export type AnalysisResult = {
     shippedUnits: number;
     componentUnits: number;
     activeSkus: number;
+    recentUnits14Days: number | null;
     recommendedUnits: number;
     estimatedCoverageGainDays: number;
   };
   recommendations: Recommendation[];
   dataSource?: "shiphero-api" | "shipbots-export";
   dataAsOf?: string;
+  exclusions?: ExclusionSummary[];
 };
 
 export type AnalysisInput = {
@@ -72,4 +85,5 @@ export type AnalysisInput = {
   mode: "demo" | "live";
   dataSource?: "shiphero-api" | "shipbots-export";
   dataAsOf?: string;
+  exclusions?: ExclusionSummary[];
 };

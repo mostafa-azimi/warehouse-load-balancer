@@ -70,8 +70,8 @@ export function getDemoInput(
   const client = demoClients.find((item) => item.id === clientId) ?? demoClients[0];
   const multiplier = lookbackDays / 90;
   const shipments: ShipmentLine[] = demandPlan.flatMap(([sku, atl, lax]) => [
-    { sku, quantity: Math.round(atl * multiplier), warehouseId: "demo-atl" },
-    { sku, quantity: Math.round(lax * multiplier), warehouseId: "demo-lax" },
+    { sku, quantity: Math.round(atl * multiplier), warehouseId: "demo-atl", recentQuantity: Math.max(1, Math.round((atl * 14) / 90)) },
+    { sku, quantity: Math.round(lax * multiplier), warehouseId: "demo-lax", recentQuantity: Math.max(1, Math.round((lax * 14) / 90)) },
   ]);
 
   return {
