@@ -7,6 +7,11 @@ import type {
   Warehouse,
 } from "./types";
 import { getRedis, redisConfigured } from "./redis";
+import {
+  getShipbotsAnalysisInput,
+  getShipbotsClientAccessStatus,
+  shipbotsSqlConfigured,
+} from "./shipbots-sql";
 import { getShipHeroAccessToken } from "./shiphero-token-store";
 
 const ENDPOINT = "https://public-api.shiphero.com/graphql";
@@ -173,7 +178,7 @@ async function request<T>(
 }
 
 export function isLiveMode() {
-  return Boolean(process.env.SHIPHERO_ACCESS_TOKEN);
+  return shipbotsSqlConfigured() || Boolean(process.env.SHIPHERO_ACCESS_TOKEN);
 }
 
 async function fetchAccessibleCustomers(): Promise<CustomerNode[]> {
@@ -260,6 +265,9 @@ function allowedCustomers(nodes: CustomerNode[]) {
 }
 
 export async function getLiveClientAccessStatus() {
+  if (shipbotsSqlConfigured()) {
+    return getShipbotsClientAccessStatus();
+  }
   if (redisConfigured()) {
     const cached = await getRedis().get<{
       clients: ClientAccount[];
@@ -395,6 +403,9 @@ export async function getLiveAnalysisInput(
   client: ClientAccount,
   lookbackDays: 60 | 90 | 120,
 ): Promise<AnalysisInput> {
+  if (shipbotsSqlConfigured()) {
+    return getShipbotsAnalysisInput(client, lookbackDays);
+  }
   const window = await analysisWindow(client, lookbackDays);
   const progress = progressKeys(client, lookbackDays);
   const variables = {

@@ -182,5 +182,7 @@ export function buildAnalysis(input: AnalysisInput): AnalysisResult {
         : 0,
     },
     recommendations,
+    dataSource: input.dataSource ?? "shiphero-api",
+    dataAsOf: input.dataAsOf,
   };
 }

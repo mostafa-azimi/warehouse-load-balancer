@@ -1,13 +1,14 @@
 # Warehouse Load Balancer
 
-A Vercel-ready Next.js application for 3PL inventory balancing across ShipHero warehouses. It connects strictly through ShipHero's Public GraphQL API—there is no ShipHero AI dependency. It analyzes 60, 90, or 120 days of shipped line items, expands kit parents into their physical components, compares warehouse demand with current available inventory, and recommends inventory transfers.
+A Vercel-ready Next.js application for 3PL inventory balancing across ShipHero warehouses. It reads analysis data from ShipHero's paid SQL data export and uses the Public GraphQL API for OAuth maintenance and future approved writes. There is no ShipHero AI dependency. It analyzes 60, 90, or 120 days of shipped line items, expands kit parents into their physical components, compares warehouse demand with current available inventory, and recommends inventory transfers.
 
 ## What is included
 
 - Eligible-client dropdown showing the client account number and plain-text name
-- Server-side ShipHero GraphQL integration with 3PL `customer_account_id` scoping
-- Shipment, inventory, and kit-definition pagination
+- Server-side, read-only ShipHero/ShipBots SQL export integration
+- Public GraphQL API fallback when the SQL export is not configured
 - Kit-component-aware demand calculation
+- Exclusion of orders marked as FBA, wholesale, or transfer activity
 - Demand-share inventory balancing across two or more warehouses
 - Reviewable transfer recommendations with confidence, coverage, and rationale
 - Approval flow that generates paired sales-order and purchase-order drafts
@@ -24,24 +25,33 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000). With no environment variables, the app runs in demo mode.
 
-## ShipHero configuration
+## Data export configuration
 
 Copy `.env.example` to `.env.local` and set:
+
+```text
+SHIPBOTS_SQL_SERVER=your_export_host
+SHIPBOTS_SQL_PORT=5500
+SHIPBOTS_SQL_DATABASE=sbsql
+SHIPBOTS_SQL_USER=your_read_only_user
+SHIPBOTS_SQL_PASSWORD=your_read_only_password
+SHIPBOTS_SQL_ENCRYPT=false
+ALLOWED_CUSTOMER_ACCOUNT_IDS=10001=Example Client,10002=Another Client
+```
+
+The SQL credentials are server-only. The app queries shipped line items, current warehouse inventory, and kit/assembly mappings directly from the six-hourly export. It does not copy customer order history into Redis or Supabase. Redis only caches completed analysis results for ten minutes and coordinates concurrent runs.
+
+When the SQL export is configured, it is the preferred analysis source. If it is not configured, the app can use the Public GraphQL API with:
 
 ```text
 SHIPHERO_ACCESS_TOKEN=your_server_side_token
 SHIPHERO_REFRESH_TOKEN=your_server_side_refresh_token
 SHIPHERO_CLIENT_ID=your_oauth_client_id
-ALLOWED_CUSTOMER_ACCOUNT_IDS=10001=Example Client,10002=Another Client
 SHIPHERO_WRITE_MODE=preview
-APP_USERNAME=your_private_username
-APP_PASSWORD=use_a_password_manager_generated_value
 CRON_SECRET=use_a_password_manager_generated_value
 ```
 
 `ALLOWED_CUSTOMER_ACCOUNT_IDS` is mandatory in live mode. It accepts either ShipHero public API IDs or numeric account numbers. Use `account=name` to override the dropdown's plain-text display name. If it is empty, no customer accounts are exposed. Never prefix a server secret with `NEXT_PUBLIC_`.
-
-`APP_USERNAME` and `APP_PASSWORD` protect both the interface and API routes with HTTP Basic authentication. The deployed app fails closed when either is missing.
 
 ## Automatic token rotation
 
@@ -55,16 +65,17 @@ The Redis integration injects `KV_REST_API_URL` and `KV_REST_API_TOKEN`. `CRON_S
 2. Add the environment variables above to the Vercel project.
 3. Deploy. Vercel detects Next.js automatically.
 
-Long-running 120-day analysis may eventually be better served by a background job plus cached snapshots. The current implementation paginates live GraphQL reads inside a request and is intended as an analysis-first MVP.
+The deployed application prefers the SQL export, so analysis no longer burns ShipHero API pagination credits. The Public API path remains available if the export settings are removed.
 
 ## Balancing model
 
 For each physical SKU, the engine:
 
 1. Expands shipped kit parents into component demand.
-2. Totals shipped component units by warehouse.
-3. Calculates each warehouse's share of demand.
-4. Applies that demand share to total currently available inventory.
-5. Recommends transfers from warehouses above their target to those below it.
+2. Excludes orders identified by status or tags as FBA, wholesale, or transfer activity.
+3. Totals shipped component units by warehouse.
+4. Calculates each warehouse's share of demand.
+5. Applies that demand share to total currently available inventory.
+6. Recommends transfers from warehouses above their target to those below it.
 
 Transfers under four units are suppressed to avoid operational noise. The threshold and future safety-stock controls can be moved into per-client settings.

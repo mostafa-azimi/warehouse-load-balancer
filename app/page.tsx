@@ -166,7 +166,7 @@ export default function Home() {
         {error && <div className="notice error">{error}</div>}
         {analysisLoading && <div className="notice" style={{ background: "#edf5f0", color: "#285f47", border: "1px solid #cfe2d7" }}><strong>Analysis in progress.</strong> {analysisProgress} Keep this page open.</div>}
         {analysis && <>
-          <div className="run-meta"><span className={`mode-pill ${analysis.mode}`}>{analysis.mode === "demo" ? "Demo analysis" : "Live analysis"}</span><span>Generated {new Date(analysis.generatedAt).toLocaleString()}</span><span>·</span><span>Kits expanded to physical components</span></div>
+          <div className="run-meta"><span className={`mode-pill ${analysis.mode}`}>{analysis.mode === "demo" ? "Demo analysis" : analysis.dataSource === "shipbots-export" ? "ShipHero data export" : "Live analysis"}</span><span>Generated {new Date(analysis.generatedAt).toLocaleString()}</span>{analysis.dataAsOf && <><span>·</span><span>Export updated {new Date(analysis.dataAsOf).toLocaleString()}</span></>}<span>·</span><span>Kits expanded to physical components</span></div>
           <section className="metrics">
             <Metric label="Units shipped" value={number.format(analysis.metrics.shippedUnits)} detail={`${analysis.lookbackDays}-day history`} />
             <Metric label="Physical demand" value={number.format(analysis.metrics.componentUnits)} detail="After kit expansion" accent />

@@ -58,6 +58,8 @@ export type AnalysisResult = {
     estimatedCoverageGainDays: number;
   };
   recommendations: Recommendation[];
+  dataSource?: "shiphero-api" | "shipbots-export";
+  dataAsOf?: string;
 };
 
 export type AnalysisInput = {
@@ -68,4 +70,6 @@ export type AnalysisInput = {
   kits: KitDefinition[];
   lookbackDays: 60 | 90 | 120;
   mode: "demo" | "live";
+  dataSource?: "shiphero-api" | "shipbots-export";
+  dataAsOf?: string;
 };
